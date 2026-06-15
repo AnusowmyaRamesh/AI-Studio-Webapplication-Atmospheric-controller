@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect, useRef } from "react";
-import { Snowflake, Wind, Sparkles, HelpCircle, AlertCircle, RefreshCw } from "lucide-react";
+import { Snowflake, Wind, Sparkles, HelpCircle, AlertCircle, RefreshCw, Volume2, VolumeX } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 
 // Particle types for snowflakes and balloons
@@ -29,6 +29,15 @@ export default function App() {
   const [activeEffect, setActiveEffect] = useState<"snowflakes" | "balloons" | null>(null);
   const [timeLeft, setTimeLeft] = useState<number>(0); // remaining milliseconds (0 to 5000)
   
+  // Audio state & Web Audio refs
+  const [audioEnabled, setAudioEnabled] = useState<boolean>(false);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  const audioLfoRef = useRef<OscillatorNode | null>(null);
+  const audioFilterRef = useRef<BiquadFilterNode | null>(null);
+  const audioGainRef = useRef<GainNode | null>(null);
+  const audioChimeIntervalRef = useRef<any>(null);
+
   // Track continuous stats for the formal laboratory dashboard
   const [activeCount, setActiveCount] = useState<number>(0);
   const [renderedFrames, setRenderedFrames] = useState<number>(60);
@@ -111,6 +120,218 @@ export default function App() {
       window.removeEventListener("resize", handleResize);
     };
   }, []);
+
+  // Web Audio Synth dynamic setup
+  useEffect(() => {
+    // If audio is disabled, or no effect is active, make sure to smoothly fade out and stop
+    if (!audioEnabled || !activeEffect) {
+      if (audioGainRef.current && audioCtxRef.current) {
+        const ctx = audioCtxRef.current;
+        const gainNode = audioGainRef.current;
+        try {
+          const now = ctx.currentTime;
+          gainNode.gain.cancelScheduledValues(now);
+          gainNode.gain.setValueAtTime(gainNode.gain.value, now);
+          gainNode.gain.linearRampToValueAtTime(0.0001, now + 0.6); // smooth fade out
+        } catch (e) {
+          // ignore context state issues
+        }
+      }
+      
+      // Clear chime loops
+      if (audioChimeIntervalRef.current) {
+        clearInterval(audioChimeIntervalRef.current);
+        audioChimeIntervalRef.current = null;
+      }
+      
+      // Schedule complete shutdown after fade out
+      const stopTimer = setTimeout(() => {
+        if (!audioEnabled || !activeEffect) {
+          try {
+            if (audioSourceRef.current) {
+              audioSourceRef.current.stop();
+              audioSourceRef.current.disconnect();
+              audioSourceRef.current = null;
+            }
+            if (audioLfoRef.current) {
+              audioLfoRef.current.stop();
+              audioLfoRef.current.disconnect();
+              audioLfoRef.current = null;
+            }
+          } catch (e) {
+            // Safe fallback
+          }
+        }
+      }, 700);
+
+      return () => clearTimeout(stopTimer);
+    }
+
+    // Otherwise, audio is enabled and activeEffect is specified:
+    // 1. Initialise Context if missing
+    if (!audioCtxRef.current) {
+      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+      if (AudioContextClass) {
+        audioCtxRef.current = new AudioContextClass();
+      }
+    }
+
+    const ctx = audioCtxRef.current;
+    if (!ctx) return;
+
+    // Wake context if suspended (browser security constraint)
+    if (ctx.state === "suspended") {
+      ctx.resume().catch(() => {});
+    }
+
+    const now = ctx.currentTime;
+
+    // Reset previous sources if any
+    try {
+      if (audioSourceRef.current) {
+        audioSourceRef.current.stop();
+        audioSourceRef.current.disconnect();
+      }
+      if (audioLfoRef.current) {
+        audioLfoRef.current.stop();
+        audioLfoRef.current.disconnect();
+      }
+    } catch (e) {}
+
+    // 2. Build our persistent dynamic volume node
+    if (!audioGainRef.current) {
+      audioGainRef.current = ctx.createGain();
+      audioGainRef.current.connect(ctx.destination);
+    }
+    const mainGain = audioGainRef.current;
+    mainGain.gain.setValueAtTime(0, now);
+    mainGain.gain.linearRampToValueAtTime(0.35, now + 0.4); // smoothly fade in
+
+    // 3. Build dynamic White Noise buffer source (acts as wind/buoyant currents)
+    const bufferSize = ctx.sampleRate * 2.5; // 2.5s loop
+    const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) {
+      data[i] = Math.random() * 2 - 1;
+    }
+
+    const noiseSource = ctx.createBufferSource();
+    noiseSource.buffer = buffer;
+    noiseSource.loop = true;
+    audioSourceRef.current = noiseSource;
+
+    // 4. Build resonant bandpass filter for simulating organic wind gusts
+    const filter = ctx.createBiquadFilter();
+    filter.type = "bandpass";
+    audioFilterRef.current = filter;
+
+    // 5. Connect noise -> filter -> main gain
+    noiseSource.connect(filter);
+    filter.connect(mainGain);
+
+    // 6. Customise synthesizer characteristics based on effect type
+    if (activeEffect === "snowflakes") {
+      // Wind whistling LFO for a cold arctic feel
+      filter.Q.value = 6.0; // very resonant whistle
+      filter.frequency.setValueAtTime(480, now);
+
+      const lfo = ctx.createOscillator();
+      lfo.frequency.setValueAtTime(0.12, now); // slow rhythmic breath (0.12 Hz)
+      
+      const lfoGain = ctx.createGain();
+      lfoGain.gain.setValueAtTime(220, now); // swing up/down by 220Hz
+      
+      lfo.connect(lfoGain);
+      lfoGain.connect(filter.frequency);
+      
+      lfo.start(now);
+      audioLfoRef.current = lfo;
+
+      // Start the wind loop
+      noiseSource.start(now);
+
+      // Trigger crisp crystalline ice chimes periodically
+      const triggerChime = () => {
+        try {
+          const chimeOsc = ctx.createOscillator();
+          const chimeGain = ctx.createGain();
+          
+          const freq = 1400 + Math.random() * 1600; // bell-like crystal harmonics
+          chimeOsc.frequency.setValueAtTime(freq, ctx.currentTime);
+          chimeOsc.type = "sine";
+          
+          chimeGain.gain.setValueAtTime(0, ctx.currentTime);
+          chimeGain.gain.linearRampToValueAtTime(0.04, ctx.currentTime + 0.04);
+          chimeGain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 1.6);
+          
+          chimeOsc.connect(chimeGain);
+          chimeGain.connect(mainGain);
+          
+          chimeOsc.start();
+          chimeOsc.stop(ctx.currentTime + 2.0);
+        } catch (err) {}
+      };
+
+      // Play initial chime and scheduled
+      triggerChime();
+      const chimeInterval = setInterval(triggerChime, 1100);
+      audioChimeIntervalRef.current = chimeInterval;
+
+    } else if (activeEffect === "balloons") {
+      // Warm rising thermal expansion sound
+      filter.Q.value = 1.8; // broad soft warm air draft
+      filter.frequency.setValueAtTime(280, now);
+
+      const lfo = ctx.createOscillator();
+      lfo.frequency.setValueAtTime(0.08, now); // extremely slow swell (0.08 Hz)
+      
+      const lfoGain = ctx.createGain();
+      lfoGain.gain.setValueAtTime(90, now); // swing between 190 and 370Hz
+      
+      lfo.connect(lfoGain);
+      lfoGain.connect(filter.frequency);
+      
+      lfo.start(now);
+      audioLfoRef.current = lfo;
+
+      // Start the balloon warm air noise loop
+      noiseSource.start(now);
+
+      // Trigger soft buoyant rubber pops or bubbles periodically
+      const triggerBubble = () => {
+        try {
+          const bubbleOsc = ctx.createOscillator();
+          const bubbleGain = ctx.createGain();
+          
+          const pitch = 200 + Math.random() * 140; // warm wood/bubble tone
+          bubbleOsc.frequency.setValueAtTime(pitch, ctx.currentTime);
+          bubbleOsc.frequency.exponentialRampToValueAtTime(pitch * 1.5, ctx.currentTime + 0.22);
+          bubbleOsc.type = "sine";
+          
+          bubbleGain.gain.setValueAtTime(0, ctx.currentTime);
+          bubbleGain.gain.linearRampToValueAtTime(0.05, ctx.currentTime + 0.03);
+          bubbleGain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.32);
+          
+          bubbleOsc.connect(bubbleGain);
+          bubbleGain.connect(mainGain);
+          
+          bubbleOsc.start();
+          bubbleOsc.stop(ctx.currentTime + 0.4);
+        } catch (err) {}
+      };
+
+      triggerBubble();
+      const bubbleInterval = setInterval(triggerBubble, 850);
+      audioChimeIntervalRef.current = bubbleInterval;
+    }
+
+    return () => {
+      // Cleanup on component unmount or next trigger
+      if (audioChimeIntervalRef.current) {
+        clearInterval(audioChimeIntervalRef.current);
+      }
+    };
+  }, [audioEnabled, activeEffect]);
 
   // Primary animation loop
   useEffect(() => {
@@ -401,6 +622,11 @@ export default function App() {
       clearTimeout(timerRef.current);
     }
     
+    // Proactively wake up Web Audio context on user trigger if audio is enabled
+    if (audioEnabled && audioCtxRef.current) {
+      audioCtxRef.current.resume().catch(() => {});
+    }
+    
     // Transition or initial setting
     setActiveEffect(type);
     setTimeLeft(5000);
@@ -551,7 +777,41 @@ export default function App() {
           <span className="font-sans text-[8px] sm:text-[9px] uppercase tracking-[0.1em] opacity-40">Ambient State</span>
           <span className="font-serif italic text-lg sm:text-xl text-[#121212]">Stable Equilibrium</span>
         </div>
-        <div className="hidden md:block w-36 lg:w-48 h-px bg-[#121212] mb-3 opacity-20" />
+        
+        {/* Subtle, formal audio toggle button */}
+        <div className="hidden md:flex flex-col items-center justify-center gap-1 mb-2">
+          <button
+            id="toggle-audio"
+            onClick={() => {
+              const nextVal = !audioEnabled;
+              setAudioEnabled(nextVal);
+              // Proactively resume context on click to guarantee immediate sound activation
+              if (nextVal) {
+                if (!audioCtxRef.current) {
+                  const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+                  if (AudioContextClass) {
+                    audioCtxRef.current = new AudioContextClass();
+                  }
+                }
+                audioCtxRef.current?.resume().catch(() => {});
+              }
+            }}
+            className="flex items-center gap-2 px-4 py-1.5 border border-[#121212]/20 hover:border-[#121212] transition-colors duration-300 font-sans text-[8px] sm:text-[9px] uppercase tracking-[0.15em] bg-transparent text-[#121212]/80 hover:text-[#121212] cursor-pointer outline-none select-none"
+          >
+            {audioEnabled ? (
+              <>
+                <Volume2 className="h-3 w-3 text-emerald-800 animate-pulse" />
+                <span>Ambient Audio: On</span>
+              </>
+            ) : (
+              <>
+                <VolumeX className="h-3 w-3 opacity-60" />
+                <span>Ambient Audio: Off</span>
+              </>
+            )}
+          </button>
+        </div>
+
         <div className="text-right flex flex-col gap-1">
           <span className="font-sans text-[8px] sm:text-[9px] uppercase tracking-[0.1em] opacity-40">Global Reference</span>
           <div className="font-serif italic text-lg sm:text-xl text-[#121212]">48.8566° N, 2.3522° E</div>
