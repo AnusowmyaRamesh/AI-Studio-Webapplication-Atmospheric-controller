@@ -1,0 +1,6 @@
+{
+  "name": "Visual Effects Showcase",
+  "description": "A formal minimalist UI application featuring beautiful falling snowflake and rising balloon effects, each lasting exactly five seconds.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
